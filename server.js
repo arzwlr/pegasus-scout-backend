@@ -373,17 +373,91 @@ async function fetchCochesNet(car) {
   return { prices, source: 'coches.net' };
 }
 
+// ── Model slug normalizer for Autoscout24 ────────────────────
+// AS24 uses /lst/<make>/<model-slug> — strip engine/trim codes,
+// keep only the base model identifier Autoscout24 actually understands.
+function getAS24ModelSlug(make, model) {
+  const m  = (model || '').trim();
+  const mk = (make  || '').toLowerCase();
+
+  if (/mercedes/i.test(mk)) {
+    const u = m.toUpperCase();
+    if (/^A[\s-]?\d/.test(u) || /^A$/.test(u.split(/\s/)[0])) return 'a-klasse';
+    if (/^B[\s-]?\d/.test(u))                                   return 'b-klasse';
+    if (/^C[\s-]?\d/.test(u) || /^C$/.test(u.split(/\s/)[0]))  return 'c-klasse';
+    if (/^E[\s-]?\d/.test(u) || /^E$/.test(u.split(/\s/)[0]))  return 'e-klasse';
+    if (/^S[\s-]?\d/.test(u) || /^S$/.test(u.split(/\s/)[0]))  return 's-klasse';
+    if (/^G[\s-]?\d/.test(u) || /^G$/.test(u.split(/\s/)[0]))  return 'g-klasse';
+    if (/^GLA/.test(u)) return 'gla'; if (/^GLB/.test(u)) return 'glb';
+    if (/^GLC/.test(u)) return 'glc'; if (/^GLE/.test(u)) return 'gle';
+    if (/^GLS/.test(u)) return 'gls'; if (/^CLA/.test(u)) return 'cla';
+    if (/^CLS/.test(u)) return 'cls'; if (/^EQA/.test(u)) return 'eqa';
+    if (/^EQB/.test(u)) return 'eqb'; if (/^EQC/.test(u)) return 'eqc';
+    if (/^EQE/.test(u)) return 'eqe'; if (/^EQS/.test(u)) return 'eqs';
+    if (/^SL/.test(u))  return 'sl';  if (/^AMG/.test(u)) return 'amg-gt';
+    return slugify(m.split(/\s+/)[0]);
+  }
+
+  if (/^audi$/i.test(mk)) {
+    // Keep base model + Sportback/Avant/Allroad if present; drop engine codes
+    const tokens = m.split(/\s+/);
+    const keep = tokens.filter((t, i) => {
+      if (i === 0) return true;
+      return /^(sportback|avant|allroad|cabrio|coupe|limousine|plus|black\s*edition)$/i.test(t);
+    });
+    return slugify(keep.join(' '));
+  }
+
+  if (/^bmw$/i.test(mk)) {
+    const u = m.toUpperCase().trim();
+    // "320d xDrive" or "3" or "3 Series" → "3er"; "X3", "M4", "iX" → as-is first token
+    const ser = u.match(/^([1-9])/);
+    if (ser && !/^(X|M|Z|I)/i.test(u)) return ser[1] + 'er';
+    return slugify(m.split(/\s+/)[0]);
+  }
+
+  if (/^volkswagen$|^vw$/i.test(mk)) {
+    // "Golf 8" → "golf", "Tiguan Allspace" → "tiguan-allspace"
+    const tokens = m.split(/\s+/);
+    const keep = tokens.filter((t, i) => {
+      if (i === 0) return true;
+      return /^(allspace|alltrack|sportsvan|r-line|plus)$/i.test(t);
+    });
+    return slugify(keep.join(' '));
+  }
+
+  // Generic: keep first 2 words, strip trailing engine codes (digits, d, e, TDI, etc.)
+  const parts = m.split(/\s+/)
+    .filter(t => !/^\d+(\.\d+)?[a-z]?$/i.test(t))       // e.g. "2.0", "45e", "300d"
+    .filter(t => !/^(tdi|tfsi|tsi|gtd|gti|gts|gta|phev|hybrid|mhev|amg|sport|line|quattro|xdrive|4matic|s\s*line|edition|business|executive|advance|style|select|premium|plus|pack|pro)$/i.test(t));
+  return slugify(parts.slice(0, 2).join(' ')) || slugify(m.split(/\s+/)[0]);
+}
+
+// ── Fuel param for Autoscout24 ────────────────────────────────
+function getAS24FuelParam(fuelType) {
+  const f = (fuelType || '').toLowerCase();
+  if (/elektr|electric|bev/.test(f))            return '&fuel=E';
+  if (/plug|phev|enchuf/.test(f))               return '&fuel=M'; // plug-in hybrid
+  if (/hybrid/.test(f))                         return '&fuel=H'; // mild/full hybrid
+  if (/diesel/.test(f))                         return '&fuel=D';
+  if (/benzin|gasolina|gasoline|petrol/.test(f)) return '&fuel=B';
+  return '';
+}
+
 // ── Autoscout24 España ───────────────────────────────────────
-// More reliable from server IPs than Wallapop
 async function fetchAutoscout24(car) {
-  const year = car.year || 2021;
+  const year      = car.year || 2021;
+  const modelSlug = getAS24ModelSlug(car.make, car.model);
+  const fuelParam = getAS24FuelParam(car.fuelType);
 
   // km cap: compare like-for-like — scale with car's mileage, min 50k
   const kmCap = Math.min(Math.max(Math.round((car.mileage || 60000) * 3 / 10000) * 10000, 50000), 250000);
 
-  const url = `https://www.autoscout24.es/lst/${slugify(car.make)}/${slugify(car.model)}` +
+  const url = `https://www.autoscout24.es/lst/${slugify(car.make)}/${modelSlug}` +
     `?atype=C&cy=E&damaged=J&desc=0&fyear=${year-2}&lyear=${year+2}` +
-    `&kmto=${kmCap}&powertype=kw&search_id=0&sort=price&source=listpage_pagination&ustate=N%2CU`;
+    `&kmto=${kmCap}&powertype=kw&search_id=0&sort=price&source=listpage_pagination&ustate=N%2CU${fuelParam}`;
+
+  console.log('[autoscout24] model-slug:', modelSlug, 'fuel:', fuelParam || 'any');
 
   console.log('[autoscout24] GET', url);
 
@@ -765,8 +839,8 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.7' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.8' }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
-app.listen(PORT, () => console.log(`Pegasus Scout backend v1.7 · port ${PORT}`));
+app.listen(PORT, () => console.log(`Pegasus Scout backend v1.8 · port ${PORT}`));
