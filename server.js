@@ -1,4 +1,4 @@
-// Pegasus Scout — Backend proxy v1.4
+// Pegasus Scout — Backend proxy v1.5
 // Node.js 18+ · Deploy on Render / Railway / Fly.io
 //
 // POST /prices  { make, model, year, mileage, fuelType }
@@ -401,43 +401,89 @@ async function fetchAutoscout24(car) {
   if (!res.ok) throw new Error(`autoscout24 HTTP ${res.status}`);
 
   const html = await res.text();
-  const prices = extractPricesAutoscout(html);
-  console.log('[autoscout24] prices:', prices.length, prices.slice(0, 5));
-  return { prices, source: 'autoscout24' };
+  const { prices, items } = extractListingsAutoscout(html);
+  console.log('[autoscout24] prices:', prices.length, 'items:', items.length, prices.slice(0, 5));
+  return { prices, items, source: 'autoscout24' };
 }
 
-function extractPricesAutoscout(html) {
+// Extract both prices AND individual listing items from Autoscout24 HTML
+function extractListingsAutoscout(html) {
   const prices = [];
+  const items  = [];
 
-  // __NEXT_DATA__ / window.__INITIAL_STATE__
+  // ── __NEXT_DATA__ ────────────────────────────────────────────
   const nd = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
   if (nd) {
     try {
-      const walk = (obj, d = 0) => {
-        if (d > 20 || !obj || typeof obj !== 'object') return;
-        for (const [k, v] of Object.entries(obj)) {
-          if ((k === 'price' || k === 'priceRaw' || k === 'amount') && typeof v === 'number' && v > 1000 && v < 350000) {
-            prices.push(v);
-          } else { walk(v, d + 1); }
+      const root = JSON.parse(nd[1]);
+
+      // Walk the JSON tree looking for listing-like objects:
+      // An object that has a numeric price (1k–350k) AND either an images array or an id.
+      function walk(obj, depth) {
+        if (depth > 20 || !obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) { obj.forEach(v => walk(v, depth + 1)); return; }
+
+        const rawPrice =
+          (typeof obj.price === 'number' ? obj.price : null) ||
+          (typeof obj.price?.value === 'number' ? obj.price.value : null) ||
+          (typeof obj.price?.raw === 'number'   ? obj.price.raw   : null) ||
+          (typeof obj.priceRaw   === 'number'   ? obj.priceRaw    : null);
+
+        if (rawPrice && rawPrice > 1000 && rawPrice < 350000) {
+          prices.push(Math.round(rawPrice));
+
+          // Try to build a listing item
+          const id = obj.id || obj.articleId || obj.guid;
+          const imgs = obj.images || obj.photos || obj.imageUrls || [];
+          const img  = Array.isArray(imgs)
+            ? (imgs[0]?.url || imgs[0]?.uri || imgs[0]?.src || (typeof imgs[0] === 'string' ? imgs[0] : null))
+            : (typeof imgs === 'string' ? imgs : null);
+          const km   = obj.mileage?.value || obj.mileage || obj.km || null;
+          const yr   = obj.firstRegistration?.year || obj.firstRegistrationYear
+                     || obj.year || obj.vehicleYear || null;
+
+          if (id || img) {
+            items.push({
+              price: Math.round(rawPrice),
+              url:   id ? `https://www.autoscout24.es/anuncios/${id}` : null,
+              image: (img && img.startsWith('http')) ? img : null,
+              km:    typeof km === 'number' ? km : parseInt(km) || null,
+              year:  typeof yr === 'number' ? yr : parseInt(yr) || null,
+            });
+          }
         }
-      };
-      walk(JSON.parse(nd[1]));
+
+        Object.values(obj).forEach(v => walk(v, depth + 1));
+      }
+      walk(root, 0);
     } catch {}
   }
 
-  // JSON fragments
+  // ── JSON fragment fallback for prices ────────────────────────
   for (const m of html.matchAll(/"(?:price|priceRaw|amount)"\s*:\s*(\d{4,6})/g)) {
     const p = parseInt(m[1]);
     if (p > 1000 && p < 350000) prices.push(p);
   }
-
-  // "24.500 €" or "24500 €"
   for (const m of html.matchAll(/(\d{1,3}(?:[.,]\d{3})+)\s*[€$]/g)) {
     const p = parseInt(m[1].replace(/[.,]/g, ''));
     if (p > 1000 && p < 350000) prices.push(p);
   }
 
-  return [...new Set(prices)];
+  // ── href-based URL fallback ──────────────────────────────────
+  // If items lack URLs, try to find article hrefs in HTML
+  if (items.length && items.some(i => !i.url)) {
+    const hrefs = [...html.matchAll(/href="(\/anuncios\/[^"]{10,}?)"/g)].map(m =>
+      'https://www.autoscout24.es' + m[1]);
+    let hi = 0;
+    for (const item of items) {
+      if (!item.url && hrefs[hi]) { item.url = hrefs[hi++]; }
+    }
+  }
+
+  return {
+    prices: [...new Set(prices)],
+    items:  items.filter(i => i.price).slice(0, 6),
+  };
 }
 
 // ── Milanuncios coches ───────────────────────────────────────
@@ -539,17 +585,19 @@ app.post('/prices', async (req, res) => {
 
   const allPrices = [];
   const sources   = [];
+  let   allItems  = [];
 
   for (const [r, name] of [[wpRes,'wallapop'],[cnRes,'coches.net'],[asRes,'autoscout24'],[mlRes,'milanuncios']]) {
     if (r.status === 'fulfilled' && r.value.prices.length) {
       allPrices.push(...r.value.prices);
       sources.push(name);
+      if (r.value.items?.length) allItems = allItems.concat(r.value.items);
     } else if (r.status === 'rejected') {
       console.log(`[/prices] ${name} failed:`, r.reason?.message);
     }
   }
 
-  console.log('[/prices] total prices:', allPrices.length, 'from:', sources);
+  console.log('[/prices] total prices:', allPrices.length, 'items:', allItems.length, 'from:', sources);
 
   if (!allPrices.length) {
     return res.status(404).json({
@@ -564,7 +612,22 @@ app.post('/prices', async (req, res) => {
   }
 
   const stats = trimmedStats(allPrices);
-  const data  = { ...stats, avgDaysToSell: estimateDays(car.fuelType, stats.rawCount), source: sources.join(' · '), cached: false };
+  // Keep items whose price survived trimming (within [median/3, median*3])
+  const sorted = [...allPrices].sort((a,b)=>a-b);
+  const mid    = Math.floor(sorted.length/2);
+  const median = sorted.length%2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
+  const filteredItems = allItems
+    .filter(i => i.price >= median/3 && i.price <= median*3)
+    .sort((a,b) => a.price - b.price)
+    .slice(0, 6);
+
+  const data  = {
+    ...stats,
+    avgDaysToSell: estimateDays(car.fuelType, stats.rawCount),
+    source: sources.join(' · '),
+    items:  filteredItems,
+    cached: false,
+  };
   cache.set(key, { ts: Date.now(), data });
   res.json(data);
 });
@@ -598,7 +661,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.4' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.5' }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
