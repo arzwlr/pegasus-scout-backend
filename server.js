@@ -1,4 +1,4 @@
-// Pegasus Scout — Backend proxy v1.2
+// Pegasus Scout — Backend proxy v1.3
 // Node.js 18+ · Deploy on Render / Railway / Fly.io
 //
 // POST /prices  { make, model, year, mileage, fuelType }
@@ -488,11 +488,25 @@ async function fetchMilanuncios(car) {
 // ── Stats ────────────────────────────────────────────────────
 function trimmedStats(prices) {
   if (!prices.length) return null;
-  const sorted  = [...prices].sort((a, b) => a - b);
-  const cut     = sorted.length > 6 ? Math.floor(sorted.length * 0.10) : 0;
-  const trimmed = cut ? sorted.slice(cut, -cut) : sorted;
+  const sorted = [...prices].sort((a, b) => a - b);
+
+  // Step 1: median-based outlier removal
+  // Keeps only prices within [median/3 … median×3] to eliminate garbage extractions
+  const mid    = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const cleaned = sorted.filter(p => p >= median / 3 && p <= median * 3);
+  if (!cleaned.length) return null;
+
+  // Step 2: trim top/bottom 10%
+  const cut     = cleaned.length > 6 ? Math.floor(cleaned.length * 0.10) : 0;
+  const trimmed = cut ? cleaned.slice(cut, -cut) : cleaned;
   const avg     = Math.round(trimmed.reduce((s, p) => s + p, 0) / trimmed.length);
-  return { min: sorted[0], max: sorted[sorted.length - 1], avg, trimmedAvg: avg, count: trimmed.length, rawCount: prices.length };
+
+  return {
+    min: cleaned[0], max: cleaned[cleaned.length - 1],
+    avg, trimmedAvg: avg,
+    count: trimmed.length, rawCount: prices.length,
+  };
 }
 
 function estimateDays(fuelType, count) {
@@ -582,7 +596,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.2' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.3' }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
