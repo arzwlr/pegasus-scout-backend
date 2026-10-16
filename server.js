@@ -64,9 +64,9 @@ async function fetchWallapop(car) {
     category_ids: '100',
     make:          normMake(car.make),
     model:         car.model || '',
-    min_year:      String((car.year || 2020) - 1),
-    max_year:      String((car.year || 2020) + 2),
-    max_km:        String((car.mileage || 60000) + 30000),
+    min_year:      String((car.year || 2020) - 3),
+    max_year:      String((car.year || 2020) + 3),
+    max_km:        '250000',
     distance:      '500000',
     order_by:      'price_low_to_high',
     start:         '0',
@@ -186,7 +186,7 @@ async function fetchCochesNet(car) {
   const km        = car.mileage || 60000;
 
   const url = `https://www.coches.net/coches-segunda-mano/${makeSlug}-${modelSlug}/` +
-    `?anofin=${year - 1}&anohasta=${year + 2}&kmdesde=0&kmhasta=${km + 30000}&preciodesde=3000`;
+    `?anofin=${year - 3}&anohasta=${year + 3}&kmdesde=0&kmhasta=250000&preciodesde=3000`;
 
   console.log('[coches.net] GET', url);
 
