@@ -406,6 +406,62 @@ async function fetchAutoscout24(car) {
   return { prices, items, source: 'autoscout24' };
 }
 
+// ── Deep helpers ─────────────────────────────────────────────
+// Search an object tree for the first numeric value at a given key
+function deepFind(obj, key, depth = 0) {
+  if (depth > 8 || !obj || typeof obj !== 'object') return null;
+  if (key in obj) return obj[key];
+  for (const v of Object.values(obj)) {
+    const r = deepFind(v, key, depth + 1);
+    if (r !== null && r !== undefined) return r;
+  }
+  return null;
+}
+
+// Extract price from an object or any of its descendants
+function deepPrice(obj, depth = 0) {
+  if (depth > 8 || !obj || typeof obj !== 'object') return null;
+  // Direct numeric checks
+  for (const k of ['price','priceRaw','amount','value']) {
+    if (typeof obj[k] === 'number' && obj[k] > 1000 && obj[k] < 350000) return obj[k];
+  }
+  // price.value / price.raw
+  if (obj.price && typeof obj.price === 'object') {
+    const pv = obj.price.value ?? obj.price.raw ?? obj.price.amount;
+    if (typeof pv === 'number' && pv > 1000 && pv < 350000) return pv;
+  }
+  // Recurse
+  for (const v of Object.values(obj)) {
+    const r = deepPrice(v, depth + 1);
+    if (r !== null) return r;
+  }
+  return null;
+}
+
+// Extract first image URL from an object or its descendants
+function deepImage(obj, depth = 0) {
+  if (depth > 8 || !obj || typeof obj !== 'object') return null;
+  // Common image array keys
+  for (const k of ['images','photos','imageUrls','pictures']) {
+    const arr = obj[k];
+    if (Array.isArray(arr) && arr.length) {
+      const first = arr[0];
+      if (typeof first === 'string' && first.startsWith('http')) return first;
+      const u = first?.url || first?.uri || first?.src || first?.bigUrl
+             || first?.large || first?.medium || first?.thumbnail
+             || first?.sizes?.big || first?.sizes?.large;
+      if (typeof u === 'string' && u.startsWith('http')) return u;
+    }
+  }
+  // Recurse into sub-objects (but skip arrays at top level to avoid noise)
+  for (const [k, v] of Object.entries(obj)) {
+    if (['images','photos'].includes(k) && Array.isArray(v)) continue; // already handled
+    const r = deepImage(v, depth + 1);
+    if (r) return r;
+  }
+  return null;
+}
+
 // Extract both prices AND individual listing items from Autoscout24 HTML
 function extractListingsAutoscout(html) {
   const prices = [];
@@ -417,118 +473,89 @@ function extractListingsAutoscout(html) {
     try {
       const root = JSON.parse(nd[1]);
 
-      // ── Pass 1: hunt for a listings/articles array anywhere in the tree
-      function findListingsArray(obj, depth) {
-        if (depth > 15 || !obj || typeof obj !== 'object') return null;
+      // ── Strategy: walk with parent context
+      // When we find a price, check BOTH current obj AND parent for id/images.
+      // This handles the common case where price is in a sub-object (tracking.price)
+      // while id and images live on the parent listing object.
+      function walk(obj, depth, parent) {
+        if (depth > 22 || !obj || typeof obj !== 'object') return;
         if (Array.isArray(obj)) {
-          // If this looks like a listings array (has ≥2 items each with a price), return it
-          if (obj.length >= 2 && obj.every(i => i && typeof i === 'object')) {
-            const withPrice = obj.filter(i => {
-              const p = i.price?.value ?? i.price?.raw ?? i.price ?? i.priceRaw;
-              return typeof p === 'number' && p > 1000 && p < 350000;
-            });
-            if (withPrice.length >= 2) return obj;
-          }
-          for (const v of obj) { const r = findListingsArray(v, depth + 1); if (r) return r; }
-          return null;
+          obj.forEach(v => walk(v, depth + 1, null));
+          return;
         }
-        // Check well-known key names first
-        for (const key of ['listings','articles','hits','vehicles','results','items','data']) {
-          if (Array.isArray(obj[key]) && obj[key].length >= 2) {
-            const r = findListingsArray(obj[key], depth + 1);
-            if (r) return r;
-          }
-        }
-        for (const v of Object.values(obj)) { const r = findListingsArray(v, depth + 1); if (r) return r; }
-        return null;
-      }
 
-      const listingsArr = findListingsArray(root, 0);
-      if (listingsArr) {
-        for (const obj of listingsArr) {
-          // Price
-          const rawPrice =
-            (typeof obj.price?.value === 'number' ? obj.price.value : null) ??
-            (typeof obj.price?.raw   === 'number' ? obj.price.raw   : null) ??
-            (typeof obj.price        === 'number' ? obj.price       : null) ??
-            (typeof obj.priceRaw     === 'number' ? obj.priceRaw    : null) ??
-            null;
-          if (!rawPrice || rawPrice < 1000 || rawPrice > 350000) continue;
+        const rawPrice =
+          (typeof obj.price === 'number' && obj.price > 1000 && obj.price < 350000 ? obj.price : null) ||
+          (typeof obj.price?.value === 'number' && obj.price.value > 1000 && obj.price.value < 350000 ? obj.price.value : null) ||
+          (typeof obj.price?.raw   === 'number' && obj.price.raw   > 1000 && obj.price.raw   < 350000 ? obj.price.raw   : null) ||
+          (typeof obj.priceRaw     === 'number' && obj.priceRaw    > 1000 && obj.priceRaw    < 350000 ? obj.priceRaw    : null);
+
+        if (rawPrice) {
           prices.push(Math.round(rawPrice));
 
-          // ID — try many field names
-          const id = obj.id || obj.articleId || obj.guid || obj.listingId
-                   || obj.vehicleId || obj.offerId || obj.externalId || null;
+          // Candidate objects: current + parent + grandparent
+          const candidates = [obj, parent].filter(Boolean);
+          let id = null, imgSrc = null, km = null, yr = null;
 
-          // Images — try many structures
-          const imgSrc = (() => {
-            const imgs = obj.images || obj.photos || obj.imageUrls || obj.media?.images
-                       || obj.vehicle?.images || obj.listing?.images || [];
-            if (Array.isArray(imgs) && imgs.length) {
-              const first = imgs[0];
-              if (typeof first === 'string') return first;
-              return first?.url || first?.uri || first?.src
-                   || first?.large || first?.medium || first?.thumbnail
-                   || first?.bigUrl || first?.sizes?.big
-                   || null;
-            }
-            if (typeof imgs === 'string') return imgs;
-            return null;
-          })();
+          for (const c of candidates) {
+            if (!id)     id     = c.id || c.articleId || c.guid || c.listingId || c.vehicleId || c.offerId || null;
+            if (!imgSrc) imgSrc = deepImage(c);
+            if (!km)     km     = c.mileage?.value ?? c.mileage ?? c.km ?? deepFind(c, 'mileage')?.value ?? null;
+            if (!yr)     yr     = c.firstRegistration?.year ?? c.firstRegistrationYear
+                                ?? c.year ?? c.vehicleYear ?? deepFind(c, 'firstRegistration')?.year ?? null;
+          }
 
-          // km and year
-          const km = obj.mileage?.value ?? obj.mileage ?? obj.km ?? obj.kilometer ?? null;
-          const yr = obj.firstRegistration?.year ?? obj.firstRegistrationYear
-                  ?? obj.year ?? obj.vehicleYear ?? obj.registrationYear ?? null;
+          // Also check if current obj itself has an id field but we missed it
+          if (!id) id = deepFind(obj, 'articleId') || deepFind(obj, 'listingId');
 
           if (id || imgSrc) {
-            items.push({
-              price: Math.round(rawPrice),
-              url:   id ? `https://www.autoscout24.es/anuncios/${id}` : null,
-              image: (imgSrc && typeof imgSrc === 'string' && imgSrc.startsWith('http')) ? imgSrc : null,
-              km:    typeof km === 'number' ? km : parseInt(km) || null,
-              year:  typeof yr === 'number' ? yr : parseInt(yr) || null,
-            });
-          }
-        }
-      }
-
-      // ── Pass 2: generic walk fallback (if Pass 1 found no items)
-      if (!items.length) {
-        function walk(obj, depth) {
-          if (depth > 20 || !obj || typeof obj !== 'object') return;
-          if (Array.isArray(obj)) { obj.forEach(v => walk(v, depth + 1)); return; }
-
-          const rawPrice =
-            (typeof obj.price === 'number' ? obj.price : null) ||
-            (typeof obj.price?.value === 'number' ? obj.price.value : null) ||
-            (typeof obj.price?.raw   === 'number' ? obj.price.raw   : null) ||
-            (typeof obj.priceRaw     === 'number' ? obj.priceRaw    : null);
-
-          if (rawPrice && rawPrice > 1000 && rawPrice < 350000) {
-            prices.push(Math.round(rawPrice));
-            const id   = obj.id || obj.articleId || obj.guid || obj.listingId || null;
-            const imgs = obj.images || obj.photos || obj.imageUrls || [];
-            const img  = Array.isArray(imgs)
-              ? (imgs[0]?.url || imgs[0]?.uri || imgs[0]?.src || imgs[0]?.bigUrl
-                || (typeof imgs[0] === 'string' ? imgs[0] : null))
-              : (typeof imgs === 'string' ? imgs : null);
-            const km = obj.mileage?.value ?? obj.mileage ?? obj.km ?? null;
-            const yr = obj.firstRegistration?.year ?? obj.firstRegistrationYear ?? obj.year ?? null;
-            if (id || img) {
+            // Deduplicate by id
+            const urlStr = id ? `https://www.autoscout24.es/anuncios/${id}` : null;
+            if (!items.some(i => i.url === urlStr && urlStr)) {
               items.push({
                 price: Math.round(rawPrice),
-                url:   id ? `https://www.autoscout24.es/anuncios/${id}` : null,
-                image: (img && img.startsWith('http')) ? img : null,
+                url:   urlStr,
+                image: imgSrc || null,
                 km:    typeof km === 'number' ? km : parseInt(km) || null,
                 year:  typeof yr === 'number' ? yr : parseInt(yr) || null,
               });
             }
           }
-          Object.values(obj).forEach(v => walk(v, depth + 1));
         }
-        walk(root, 0);
+
+        Object.values(obj).forEach(v => walk(v, depth + 1, obj));
       }
+
+      walk(root, 0, null);
+
+      // ── If still no items, try scanning for listing-shaped objects by id
+      if (!items.length) {
+        function findById(obj, depth) {
+          if (depth > 15 || !obj || typeof obj !== 'object') return;
+          if (Array.isArray(obj)) { obj.forEach(v => findById(v, depth + 1)); return; }
+          // A listing object typically has a string id of 6+ chars AND contains a price somewhere
+          const id = typeof obj.id === 'string' && obj.id.length >= 6 ? obj.id : null;
+          if (id) {
+            const p = deepPrice(obj);
+            if (p) {
+              prices.push(Math.round(p));
+              const img = deepImage(obj);
+              const km  = deepFind(obj, 'mileage');
+              const yr  = deepFind(obj, 'year') || deepFind(obj, 'firstRegistration')?.year;
+              const urlStr = `https://www.autoscout24.es/anuncios/${id}`;
+              if (!items.some(i => i.url === urlStr)) {
+                items.push({ price: Math.round(p), url: urlStr, image: img || null,
+                  km: typeof km === 'object' ? (km?.value || null) : (parseInt(km) || null),
+                  year: parseInt(yr) || null });
+              }
+              return; // Don't recurse into listing sub-objects
+            }
+          }
+          Object.values(obj).forEach(v => findById(v, depth + 1));
+        }
+        findById(root, 0);
+      }
+
     } catch(e) { console.log('[autoscout24] parse error:', e.message); }
   }
 
@@ -542,27 +569,20 @@ function extractListingsAutoscout(html) {
     if (p > 1000 && p < 350000) prices.push(p);
   }
 
-  // ── href-based URL fallback ──────────────────────────────────
-  const hrefs = [...html.matchAll(/href="(\/anuncios\/[^"?]{6,}?)"/g)].map(m =>
-    'https://www.autoscout24.es' + m[1]);
-  if (hrefs.length && (!items.length || items.some(i => !i.url))) {
-    let hi = 0;
-    if (!items.length) {
-      // No items at all — build stub items from hrefs + price fragments
-      const priceFrags = [...html.matchAll(/"price"\s*:\s*\{[^}]*"value"\s*:\s*(\d{4,6})/g)]
-        .map(m => parseInt(m[1])).filter(p => p > 1000 && p < 350000);
-      for (let i = 0; i < Math.min(hrefs.length, 6, priceFrags.length); i++) {
-        items.push({ price: priceFrags[i], url: hrefs[i], image: null, km: null, year: null });
-      }
-    } else {
-      for (const item of items) {
-        if (!item.url && hrefs[hi]) item.url = hrefs[hi++];
-      }
+  // ── href + price stub fallback (last resort) ─────────────────
+  if (!items.length) {
+    const hrefs = [...new Set(
+      [...html.matchAll(/href="(\/anuncios\/[^"?#]{6,}?)"/g)].map(m => 'https://www.autoscout24.es' + m[1])
+    )];
+    // prices already collected above; sort and pair
+    const stubPrices = [...new Set(prices)].sort((a,b) => a-b);
+    for (let i = 0; i < Math.min(hrefs.length, 6, stubPrices.length); i++) {
+      items.push({ price: stubPrices[i], url: hrefs[i], image: null, km: null, year: null });
     }
   }
 
   console.log('[autoscout24-extract] prices:', prices.length, 'items:', items.length,
-    items.length ? 'sample:' + JSON.stringify(items[0]) : '');
+    items.length ? ' sample0:' + JSON.stringify(items[0]) : '');
 
   return {
     prices: [...new Set(prices)],
@@ -745,8 +765,8 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.5' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.7' }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
-app.listen(PORT, () => console.log(`Pegasus Scout backend v1.6 · port ${PORT}`));
+app.listen(PORT, () => console.log(`Pegasus Scout backend v1.7 · port ${PORT}`));
