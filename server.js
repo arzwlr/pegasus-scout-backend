@@ -1,4 +1,4 @@
-// Pegasus Scout — Backend proxy v1.3
+// Pegasus Scout — Backend proxy v1.4
 // Node.js 18+ · Deploy on Render / Railway / Fly.io
 //
 // POST /prices  { make, model, year, mileage, fuelType }
@@ -345,8 +345,9 @@ async function fetchCochesNet(car) {
   const modelSlug = getCochesNetModelSlug(car.make, car.model);
   const year      = car.year || 2021;
 
+  const kmCap = Math.min(Math.max(Math.round((car.mileage || 60000) * 3 / 10000) * 10000, 50000), 250000);
   const url = `https://www.coches.net/coches-segunda-mano/${makeSlug}-${modelSlug}/` +
-    `?anofin=${year - 3}&anohasta=${year + 3}&kmdesde=0&kmhasta=250000&preciodesde=3000`;
+    `?anofin=${year - 2}&anohasta=${year + 2}&kmdesde=0&kmhasta=${kmCap}&preciodesde=3000`;
 
   console.log('[coches.net] GET', url);
 
@@ -375,13 +376,14 @@ async function fetchCochesNet(car) {
 // ── Autoscout24 España ───────────────────────────────────────
 // More reliable from server IPs than Wallapop
 async function fetchAutoscout24(car) {
-  const makeSlug  = slugify(car.make).replace(/-/g, '');
-  const year      = car.year || 2021;
+  const year = car.year || 2021;
 
-  // Autoscout24 uses mmid/moid system; use their search page as fallback
+  // km cap: compare like-for-like — scale with car's mileage, min 50k
+  const kmCap = Math.min(Math.max(Math.round((car.mileage || 60000) * 3 / 10000) * 10000, 50000), 250000);
+
   const url = `https://www.autoscout24.es/lst/${slugify(car.make)}/${slugify(car.model)}` +
-    `?atype=C&cy=E&damaged=J&desc=0&fyear=${year-3}&lyear=${year+3}` +
-    `&kmto=250000&powertype=kw&search_id=0&sort=price&source=listpage_pagination&ustate=N%2CU`;
+    `?atype=C&cy=E&damaged=J&desc=0&fyear=${year-2}&lyear=${year+2}` +
+    `&kmto=${kmCap}&powertype=kw&search_id=0&sort=price&source=listpage_pagination&ustate=N%2CU`;
 
   console.log('[autoscout24] GET', url);
 
@@ -596,7 +598,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.3' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.4' }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
