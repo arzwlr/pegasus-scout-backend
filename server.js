@@ -37,6 +37,17 @@ function cacheKey(car) {
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
+// ── ScraperAPI proxy ─────────────────────────────────────────
+// Routes blocked portals (coches.net, wallapop, milanuncios) through
+// residential IPs with JS rendering. Falls back to direct fetch if no key.
+const SCRAPER_KEY = process.env.SCRAPER_API_KEY || 'cc1489f05711db051fe6ae3f979ec8d9';
+
+async function scrapedFetch(url, opts = {}) {
+  if (!SCRAPER_KEY) return fetch(url, { ...opts, signal: AbortSignal.timeout(15000) });
+  const proxied = `https://api.scraperapi.com?api_key=${SCRAPER_KEY}&url=${encodeURIComponent(url)}&render=true&country_code=es`;
+  return fetch(proxied, { signal: AbortSignal.timeout(30000) });
+}
+
 // ── Slug helpers ─────────────────────────────────────────────
 function slugify(str) {
   return (str || '').toLowerCase()
@@ -191,17 +202,7 @@ async function fetchWallapop(car) {
   const url = `https://api.wallapop.com/api/v3/cars/search?${params}`;
   console.log('[wallapop] GET', url);
 
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent':      UA,
-      'Accept':          'application/json',
-      'Accept-Language': 'es-ES,es;q=0.9',
-      'Origin':          'https://es.wallapop.com',
-      'Referer':         'https://es.wallapop.com/coches-segunda-mano',
-      'X-DeviceOS':      '0',
-    },
-    signal: AbortSignal.timeout(12000),
-  });
+  const res = await scrapedFetch(url);
 
   console.log('[wallapop] status', res.status);
   if (!res.ok) {
@@ -351,16 +352,7 @@ async function fetchCochesNet(car) {
 
   console.log('[coches.net] GET', url);
 
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent':      UA,
-      'Accept':          'text/html,application/xhtml+xml,*/*;q=0.9',
-      'Accept-Language': 'es-ES,es;q=0.9',
-      'Referer':         'https://www.coches.net/',
-      'Cache-Control':   'no-cache',
-    },
-    signal: AbortSignal.timeout(15000),
-  });
+  const res = await scrapedFetch(url);
 
   console.log('[coches.net] status', res.status, 'url-slug:', `${makeSlug}-${modelSlug}`);
   if (!res.ok) throw new Error(`coches.net HTTP ${res.status} (slug: ${makeSlug}-${modelSlug})`);
@@ -683,10 +675,7 @@ async function fetchMilanuncios(car) {
     });
 
   console.log('[milanuncios] GET', url);
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA, 'Accept': 'text/html', 'Accept-Language': 'es-ES,es;q=0.9' },
-    signal: AbortSignal.timeout(12000),
-  });
+  const res = await scrapedFetch(url);
 
   console.log('[milanuncios] status', res.status);
   if (!res.ok) throw new Error(`milanuncios HTTP ${res.status}`);
