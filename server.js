@@ -1,4 +1,4 @@
-// Pegasus Scout — Backend proxy v1.5
+// Pegasus Scout — Backend proxy v1.9
 // Node.js 18+ · Deploy on Render / Railway / Fly.io
 //
 // POST /prices  { make, model, year, mileage, fuelType }
@@ -451,11 +451,14 @@ async function fetchAutoscout24(car) {
   const fuelParam = getAS24FuelParam(car.fuelType);
 
   // km cap: compare like-for-like — scale with car's mileage, min 50k
-  const kmCap = Math.min(Math.max(Math.round((car.mileage || 60000) * 3 / 10000) * 10000, 50000), 250000);
+  const mileage = car.mileage || 60000;
+  // km band: ±60 000 km around the car's mileage, capped at [0, 250 000]
+  const kmFrom = Math.max(0, Math.round((mileage - 60000) / 10000) * 10000);
+  const kmTo   = Math.min(250000, Math.round((mileage + 60000) / 10000) * 10000);
 
   const url = `https://www.autoscout24.es/lst/${slugify(car.make)}/${modelSlug}` +
-    `?atype=C&cy=E&damaged=J&desc=0&fyear=${year-2}&lyear=${year+2}` +
-    `&kmto=${kmCap}&powertype=kw&search_id=0&sort=price&source=listpage_pagination&ustate=N%2CU${fuelParam}`;
+    `?atype=C&cy=E&damaged=N&desc=0&fyear=${year-2}&lyear=${year+2}` +
+    `&kmfrom=${kmFrom}&kmto=${kmTo}&powertype=kw&search_id=0&sort=price&source=listpage_pagination&ustate=N%2CU${fuelParam}`;
 
   console.log('[autoscout24] model-slug:', modelSlug, 'fuel:', fuelParam || 'any');
 
@@ -717,10 +720,10 @@ function trimmedStats(prices) {
   const sorted = [...prices].sort((a, b) => a - b);
 
   // Step 1: median-based outlier removal
-  // Keeps only prices within [median/3 … median×3] to eliminate garbage extractions
+  // Keeps only prices within [median×0.5 … median×2] — tight band, similar-segment vehicles
   const mid    = Math.floor(sorted.length / 2);
   const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-  const cleaned = sorted.filter(p => p >= median / 3 && p <= median * 3);
+  const cleaned = sorted.filter(p => p >= median * 0.5 && p <= median * 2);
   if (!cleaned.length) return null;
 
   // Step 2: trim top/bottom 10%
@@ -794,9 +797,10 @@ app.post('/prices', async (req, res) => {
   const sorted = [...allPrices].sort((a,b)=>a-b);
   const mid    = Math.floor(sorted.length/2);
   const median = sorted.length%2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
+  // Show comparison cards closest to the median price (same segment)
   const filteredItems = allItems
-    .filter(i => i.price >= median/3 && i.price <= median*3)
-    .sort((a,b) => a.price - b.price)
+    .filter(i => i.price >= median * 0.55 && i.price <= median * 1.8)
+    .sort((a,b) => Math.abs(a.price - median) - Math.abs(b.price - median))
     .slice(0, 6);
 
   const data  = {
@@ -839,7 +843,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.8' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.9' }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
