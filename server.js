@@ -670,7 +670,7 @@ function extractListingsAutoscout(html) {
 
   return {
     prices: [...new Set(prices)],
-    items:  items.filter(i => i.price).slice(0, 6),
+    items:  items.filter(i => i.price),
   };
 }
 
@@ -804,8 +804,7 @@ app.post('/prices', async (req, res) => {
   // Show comparison cards closest to the median price (same segment)
   const filteredItems = allItems
     .filter(i => i.price >= median * 0.55 && i.price <= median * 1.8)
-    .sort((a,b) => Math.abs(a.price - median) - Math.abs(b.price - median))
-    .slice(0, 6);
+    .sort((a,b) => Math.abs(a.price - median) - Math.abs(b.price - median));
 
   const data  = {
     ...stats,
