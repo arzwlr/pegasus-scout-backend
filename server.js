@@ -1,4 +1,4 @@
-// Pegasus Scout — Backend proxy v1.9
+// Pegasus Scout — Backend proxy v2.0
 // Node.js 18+ · Deploy on Render / Railway / Fly.io
 //
 // POST /prices  { make, model, year, mileage, fuelType }
@@ -205,7 +205,19 @@ async function fetchWallapop(car) {
   const url = `https://api.wallapop.com/api/v3/cars/search?${params}`;
   console.log('[wallapop] GET', url);
 
-  const res = await scrapedFetch(url);
+  // Wallapop es una JSON API — ScraperAPI interfiere; llamada directa con headers adecuados
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent':      UA,
+      'Accept':          'application/json, text/plain, */*',
+      'Accept-Language': 'es-ES,es;q=0.9',
+      'Origin':          'https://es.wallapop.com',
+      'Referer':         'https://es.wallapop.com/coches-segunda-mano',
+      'X-DeviceOS':      '0',
+      'X-AppVersion':    '80000',
+    },
+    signal: AbortSignal.timeout(12000),
+  });
 
   console.log('[wallapop] status', res.status);
   if (!res.ok) {
@@ -350,7 +362,7 @@ async function fetchCochesNet(car) {
   const year      = car.year || 2021;
 
   const kmCap = Math.min(Math.max(Math.round((car.mileage || 60000) * 3 / 10000) * 10000, 50000), 250000);
-  const url = `https://www.coches.net/coches-segunda-mano/${makeSlug}-${modelSlug}/` +
+  const url = `https://www.coches.net/coches-segunda-mano/${makeSlug}/${modelSlug}/` +
     `?anofin=${year - 2}&anohasta=${year + 2}&kmdesde=0&kmhasta=${kmCap}&preciodesde=3000`;
 
   console.log('[coches.net] GET', url);
@@ -835,7 +847,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '1.9' }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.0', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
