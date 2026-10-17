@@ -44,8 +44,11 @@ const SCRAPER_KEY = process.env.SCRAPER_API_KEY || 'cc1489f05711db051fe6ae3f979e
 
 async function scrapedFetch(url, opts = {}) {
   if (!SCRAPER_KEY) return fetch(url, { ...opts, signal: AbortSignal.timeout(15000) });
-  const proxied = `https://api.scraperapi.com?api_key=${SCRAPER_KEY}&url=${encodeURIComponent(url)}&render=true&country_code=es`;
-  return fetch(proxied, { signal: AbortSignal.timeout(30000) });
+  // render=false: HTML estático (coches.net, milanuncios) — rápido ~3s
+  // render=true solo si se pasa explícitamente en opts.render
+  const render = opts.render ? '&render=true' : '';
+  const proxied = `https://api.scraperapi.com?api_key=${SCRAPER_KEY}&url=${encodeURIComponent(url)}&country_code=es${render}`;
+  return fetch(proxied, { signal: AbortSignal.timeout(20000) });
 }
 
 // ── Slug helpers ─────────────────────────────────────────────
