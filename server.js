@@ -127,6 +127,7 @@ const COCHES_MODEL_MAP = {
       if (/^A7/.test(u)) return 'a7';
       if (/^A8/.test(u)) return 'a8';
       if (/^Q2/.test(u)) return 'q2';
+      if (/^Q3\s+SPORTBACK/i.test(u)) return 'q3-sportback';
       if (/^Q3/.test(u)) return 'q3';
       if (/^Q4/.test(u)) return 'q4';
       if (/^Q5/.test(u)) return 'q5';
@@ -176,6 +177,10 @@ function normModelWallapop(make, model) {
   if (/bmw/i.test(make)) {
     const match = m.match(/^([1-9]|X[1-9]|Z[1-9]|i[0-9]|M[0-9]|iX)/i);
     return match ? match[1] : m.split(/\s+/)[0];
+  }
+  // Audi: wallapop only recognizes base model ("Q3", not "Q3 Sportback 45e")
+  if (/audi/i.test(make)) {
+    return m.split(/\s+/)[0]; // "Q3 Sportback 45e" → "Q3"
   }
   // Default: strip trailing engine code ("A4 2.0 TFSI" → "A4")
   return m.split(/\s+/).slice(0, 2).join(' ');
@@ -471,7 +476,7 @@ async function fetchAutoscout24(car) {
 
   console.log('[autoscout24] GET', url);
 
-  const res = await fetch(url, {
+  let res = await fetch(url, {
     headers: {
       'User-Agent':      UA,
       'Accept':          'text/html,*/*',
@@ -481,7 +486,29 @@ async function fetchAutoscout24(car) {
     signal: AbortSignal.timeout(15000),
   });
 
-  console.log('[autoscout24] status', res.status);
+  console.log('[autoscout24] direct status', res.status);
+
+  // If blocked, retry via ScraperAPI
+  if (!res.ok && SCRAPER_KEY) {
+    console.log('[autoscout24] retrying via ScraperAPI...');
+    res = await scrapedFetch(url);
+    console.log('[autoscout24] scraperapi status', res.status);
+  }
+
+  // If specific model slug 404, retry with base model (e.g. "q3-sportback" → "q3")
+  if (res.status === 404) {
+    const baseSlug = modelSlug.split('-')[0]; // "q3-sportback" → "q3"
+    if (baseSlug !== modelSlug) {
+      const fallbackUrl = url.replace(`/${modelSlug}?`, `/${baseSlug}?`);
+      console.log('[autoscout24] slug fallback:', baseSlug, fallbackUrl);
+      res = SCRAPER_KEY ? await scrapedFetch(fallbackUrl) : await fetch(fallbackUrl, {
+        headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*', 'Accept-Language': 'es-ES,es;q=0.9' },
+        signal: AbortSignal.timeout(15000),
+      });
+      console.log('[autoscout24] fallback status', res.status);
+    }
+  }
+
   if (!res.ok) throw new Error(`autoscout24 HTTP ${res.status}`);
 
   const html = await res.text();
@@ -713,7 +740,8 @@ async function fetchMilanuncios(car) {
     if (p > 1000 && p < 350000) prices.push(p);
   }
 
-  const unique = [...new Set(prices)];
+  // Filter obvious junk: min 5.000€ for a car, and median-sanity check
+  const unique = [...new Set(prices)].filter(p => p >= 5000);
   console.log('[milanuncios] prices:', unique.length, unique.slice(0, 5));
   return { prices: unique, source: 'milanuncios' };
 }
@@ -882,7 +910,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.0', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.3', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
