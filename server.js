@@ -782,6 +782,15 @@ function extractListingsAutoscout(html) {
         .map(m => m[1].replace(/\\/g, ''))
     )];
 
+    // Extract years from JSON (firstRegistrationYear, year, vehicleYear)
+    const yearsInJson = [...jsonStr.matchAll(/"(?:firstRegistrationYear|vehicleYear|modelYear|year)"\s*:\s*(\d{4})/g)]
+      .map(m => parseInt(m[1])).filter(y => y >= 2000 && y <= 2030);
+    // Extract km values (mileage.value or plain mileage/km number)
+    const kmsInJson = [
+      ...[...jsonStr.matchAll(/"mileage"\s*:\s*\{[^}]*?"value"\s*:\s*(\d+)/g)].map(m => parseInt(m[1])),
+      ...[...jsonStr.matchAll(/"(?:mileage|km|kilometers)"\s*:\s*(\d{4,6})/g)].map(m => parseInt(m[1])),
+    ].filter(k => k >= 500 && k < 500000);
+
     const sp = [...new Set(prices)].filter(p => p > 5000).sort((a,b) => a-b);
     const allUrls = [
       ...urlsInJson,
@@ -789,9 +798,10 @@ function extractListingsAutoscout(html) {
     ].filter((u,i,a) => a.indexOf(u) === i); // unique
 
     for (let i = 0; i < Math.min(allUrls.length, 6, sp.length); i++) {
-      items.push({ price: sp[i], url: allUrls[i], image: imgsInJson[i] || null, km: null, year: null });
+      items.push({ price: sp[i], url: allUrls[i], image: imgsInJson[i] || null,
+                   km: kmsInJson[i] || null, year: yearsInJson[i] || null });
     }
-    if (items.length) console.log('[autoscout24] json-scan fallback found', items.length, 'items, urls:', allUrls.length, 'imgs:', imgsInJson.length);
+    if (items.length) console.log('[autoscout24] json-scan fallback found', items.length, 'items, urls:', allUrls.length, 'imgs:', imgsInJson.length, 'years:', yearsInJson.slice(0,3), 'kms:', kmsInJson.slice(0,3));
   }
 
   // ── href stub fallback (absolute last resort) ─────────────────
@@ -1100,7 +1110,7 @@ app.get('/debug-as24-struct', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.4', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.5', scraperApi: !!SCRAPER_KEY }));
 
 // ── POST /echo ── confirm body parsing works ──────────────────
 app.post('/echo', (req, res) => res.json({ received: req.body, ok: true }));
