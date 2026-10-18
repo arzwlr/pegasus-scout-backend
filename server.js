@@ -17,7 +17,8 @@ app.use(cors({
     if (!origin
       || /^chrome-extension:\/\//.test(origin)
       || /^moz-extension:\/\//.test(origin)
-      || /^opera-extension:\/\//.test(origin)) {
+      || /^opera-extension:\/\//.test(origin)
+      || /onrender\.com$/.test(origin)) {   // allow same-domain for browser testing
       cb(null, true);
     } else {
       cb(new Error('Not allowed by CORS'));
@@ -956,21 +957,30 @@ app.post('/prices', async (req, res) => {
   }
 
   const stats = trimmedStats(allPrices);
-  // Keep items whose price survived trimming (within [median/3, median*3])
+  if (!stats) {
+    return res.status(404).json({
+      error: 'No hay suficientes precios comparables en el mercado español.',
+      detail: { wallapop: wpRes.reason?.message ?? 'ok', coches: cnRes.reason?.message ?? 'ok', autoscout24: asRes.reason?.message ?? 'ok', milanuncios: mlRes.reason?.message ?? 'ok' },
+    });
+  }
+
   const sorted = [...allPrices].sort((a,b)=>a-b);
   const mid    = Math.floor(sorted.length/2);
   const median = sorted.length%2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
 
-  // Show comparison cards: filter by year/km proximity first, then by price
+  // Show comparison cards: filter by year/km proximity, then by Spanish-market price band
+  // Use median-based floor (NOT German purchase price) so PHEV/base variants both appear
   const carYear      = car.year || 0;
   const carKm        = car.mileage || 0;
-  const cardPriceMin = car.price && car.price > 5000 ? car.price * 0.70 : median * 0.55;
+  const cardPriceMin = median * 0.50;  // show anything ≥50% of Spanish median
+  const cardPriceMax = median * 1.70;  // cap at 170% of median
+
   const filteredItems = allItems
     .filter(i => {
       if (!i.price) return false;
-      // Price sanity: above German-price floor AND within 160% of median
+      // Price sanity: within Spanish market band around median
       if (i.price < cardPriceMin) return false;
-      if (i.price > median * 1.60) return false;
+      if (i.price > cardPriceMax) return false;
       // Year filter: if both car and item have year, must be within ±4 years
       if (carYear && i.year && Math.abs(i.year - carYear) > 4) return false;
       // Km filter: if item has km, must be under car.km * 3
@@ -987,7 +997,7 @@ app.post('/prices', async (req, res) => {
       return (yearScoreA * 3000 + priceScoreA) - (yearScoreB * 3000 + priceScoreB);
     });
 
-  console.log(`[/prices] filteredItems: ${filteredItems.length} (from allItems: ${allItems.length}), cardPriceMin: ${Math.round(cardPriceMin)}€, median: ${Math.round(median)}€`);
+  console.log(`[/prices] filteredItems: ${filteredItems.length} (from allItems: ${allItems.length}), cardPriceMin: ${Math.round(cardPriceMin)}€, cardPriceMax: ${Math.round(cardPriceMax)}€, median: ${Math.round(median)}€`);
   if (filteredItems.length) console.log('[/prices] filteredItems[0]:', JSON.stringify(filteredItems[0]));
   else if (allItems.length) console.log('[/prices] allItems rejected, sample[0]:', JSON.stringify(allItems[0]));
 
@@ -1090,7 +1100,10 @@ app.get('/debug-as24-struct', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.2', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.3', scraperApi: !!SCRAPER_KEY }));
+
+// ── POST /echo ── confirm body parsing works ──────────────────
+app.post('/echo', (req, res) => res.json({ received: req.body, ok: true }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
