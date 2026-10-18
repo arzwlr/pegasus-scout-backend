@@ -1014,6 +1014,50 @@ app.get('/debug', async (req, res) => {
   });
 });
 
+// ── GET /debug-as24-struct ────────────────────────────────────
+// Returns the raw __NEXT_DATA__ listing structure for inspection
+app.get('/debug-as24-struct', async (req, res) => {
+  const make  = req.query.make  || 'audi';
+  const model = req.query.model || 'q3-sportback';
+  const fuel  = req.query.fuel  || 'M';
+  const url   = `https://www.autoscout24.es/lst/${make}/${model}?atype=C&fuel=${fuel}&cy=E&ustate=N%2CU&sort=standard&desc=0&size=20`;
+  try {
+    let r = await fetch(url, {
+      headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*', 'Accept-Language': 'es-ES,es;q=0.9', 'Referer': 'https://www.autoscout24.es/' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok && SCRAPER_KEY) r = await scrapedFetch(url);
+    const html = await r.text();
+    const nd = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+    if (!nd) return res.json({ error: 'no __NEXT_DATA__', htmlSnippet: html.slice(0,400) });
+    const data = JSON.parse(nd[1]);
+    // Find first large array (likely listings)
+    function findArr(obj, depth=0, path='') {
+      if (depth > 8 || !obj || typeof obj !== 'object') return null;
+      if (Array.isArray(obj) && obj.length >= 3) {
+        const f = obj[0];
+        if (f && typeof f === 'object' && Object.keys(f).length >= 4) return {path, len: obj.length, sample: f};
+      }
+      if (!Array.isArray(obj)) for (const [k,v] of Object.entries(obj)) { const r=findArr(v,depth+1,path+'.'+k); if(r) return r; }
+      return null;
+    }
+    const found = findArr(data);
+    if (!found) return res.json({ error: 'no listing array', topKeys: Object.keys(data) });
+    const s = found.sample;
+    res.json({
+      path: found.path, count: found.len,
+      sampleKeys: Object.keys(s),
+      id: s.id, articleId: s.articleId, vehicleId: s.vehicleId, guid: s.guid, listingId: s.listingId,
+      price: s.price, priceRaw: s.priceRaw,
+      url: s.url || s.urlPath || s.href || s.detailUrl,
+      images: s.images ? JSON.stringify(s.images[0]).slice(0,200) : null,
+      mileage: s.mileage, year: s.year, firstReg: s.firstRegistration || s.firstRegistrationYear,
+      tracking: s.tracking ? JSON.stringify(s.tracking).slice(0,300) : null,
+      fullSample: JSON.stringify(s).slice(0, 1500),
+    });
+  } catch(e) { res.json({ error: e.message }); }
+});
+
 // ── GET /health ──────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.9', scraperApi: !!SCRAPER_KEY }));
 
