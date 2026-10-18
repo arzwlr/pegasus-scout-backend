@@ -815,7 +815,7 @@ app.post('/prices', async (req, res) => {
   // ── Price floor: if we know the German purchase price, cap implausibly cheap results
   // E.g. a 27.950€ German Q3 Sportback 45e shouldn't compare with 8.000€ Gen1 Q3s
   if (car.price && car.price > 5000) {
-    const priceFloor = car.price * 0.42;
+    const priceFloor = car.price * 0.55;
     const before = allPrices.length;
     const filtered = allPrices.filter(p => p >= priceFloor);
     if (filtered.length >= 3) {
@@ -847,7 +847,7 @@ app.post('/prices', async (req, res) => {
   // Show comparison cards: filter by year/km proximity first, then by price
   const carYear      = car.year || 0;
   const carKm        = car.mileage || 0;
-  const cardPriceMin = car.price && car.price > 5000 ? car.price * 0.42 : median * 0.45;
+  const cardPriceMin = car.price && car.price > 5000 ? car.price * 0.55 : median * 0.45;
   const filteredItems = allItems
     .filter(i => {
       if (!i.price) return false;
@@ -910,7 +910,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.3', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.4', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
