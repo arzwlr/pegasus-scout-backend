@@ -516,6 +516,35 @@ async function fetchAutoscout24(car) {
   const html = await res.text();
   const { prices, items } = extractListingsAutoscout(html);
   console.log('[autoscout24] prices:', prices.length, 'items:', items.length, prices.slice(0, 5));
+
+  // ── Fallback: if fuel-filtered search returned < 3 items, retry without fuel ──
+  // This handles niche PHEV models with few listings in Spain (e.g. Q3 Sportback 45e)
+  if (fuelParam && items.length < 3) {
+    console.log('[autoscout24] < 3 items with fuel filter, retrying without fuel param...');
+    const urlNoFuel = url.replace(fuelParam, '');
+    let res2;
+    try {
+      res2 = await fetch(urlNoFuel, {
+        headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*', 'Accept-Language': 'es-ES,es;q=0.9', 'Referer': 'https://www.autoscout24.es/' },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res2.ok && SCRAPER_KEY) res2 = await scrapedFetch(urlNoFuel);
+      if (res2.ok) {
+        const html2 = await res2.text();
+        const { prices: p2, items: i2 } = extractListingsAutoscout(html2);
+        console.log('[autoscout24-nofuel] prices:', p2.length, 'items:', i2.length);
+        // Merge: use original prices (fuel-filtered) for stats, supplement items from broader search
+        const mergedItems = [...items];
+        for (const it of i2) {
+          if (!mergedItems.some(m => m.url === it.url)) mergedItems.push(it);
+        }
+        return { prices: prices.length >= 3 ? prices : p2, items: mergedItems, source: 'autoscout24' };
+      }
+    } catch(e) {
+      console.log('[autoscout24-nofuel] failed:', e.message);
+    }
+  }
+
   return { prices, items, source: 'autoscout24' };
 }
 
@@ -803,9 +832,12 @@ app.post('/prices', async (req, res) => {
   let   allItems  = [];
 
   for (const [r, name] of [[wpRes,'wallapop'],[cnRes,'coches.net'],[asRes,'autoscout24'],[mlRes,'milanuncios']]) {
-    if (r.status === 'fulfilled' && r.value.prices.length) {
-      allPrices.push(...r.value.prices);
-      sources.push(name);
+    if (r.status === 'fulfilled') {
+      if (r.value.prices.length) {
+        allPrices.push(...r.value.prices);
+        sources.push(name);
+      }
+      // Items added independently — autoscout may have items even when fuel-filtered prices = 0
       if (r.value.items?.length) allItems = allItems.concat(r.value.items);
     } else if (r.status === 'rejected') {
       console.log(`[/prices] ${name} failed:`, r.reason?.message);
@@ -873,6 +905,10 @@ app.post('/prices', async (req, res) => {
       return (yearScoreA * 3000 + priceScoreA) - (yearScoreB * 3000 + priceScoreB);
     });
 
+  console.log(`[/prices] filteredItems: ${filteredItems.length} (from allItems: ${allItems.length}), cardPriceMin: ${Math.round(cardPriceMin)}€, median: ${Math.round(median)}€`);
+  if (filteredItems.length) console.log('[/prices] filteredItems[0]:', JSON.stringify(filteredItems[0]));
+  else if (allItems.length) console.log('[/prices] allItems rejected, sample[0]:', JSON.stringify(allItems[0]));
+
   const data  = {
     ...stats,
     avgDaysToSell: estimateDays(car.fuelType, stats.rawCount),
@@ -913,7 +949,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.6', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.7', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
