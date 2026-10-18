@@ -448,10 +448,12 @@ function getAS24ModelSlug(make, model) {
 // ── Fuel param for Autoscout24 ────────────────────────────────
 function getAS24FuelParam(fuelType) {
   const f = (fuelType || '').toLowerCase();
-  if (/elektr|electric|bev/.test(f))            return '&fuel=E';
-  if (/plug|phev|enchuf/.test(f))               return '&fuel=M'; // plug-in hybrid
-  if (/hybrid/.test(f))                         return '&fuel=H'; // mild/full hybrid
-  if (/diesel/.test(f))                         return '&fuel=D';
+  if (/elektr|electric|bev/.test(f))             return '&fuel=E';
+  if (/plug|phev|enchuf/.test(f))                return '&fuel=M'; // plug-in hybrid
+  // "Híbrido (gasolina/eléctrico)" = PHEV on mobile.de — detect by gasolina+eléctrico combo
+  if (/gasolina.*el[eé]ctric|el[eé]ctric.*gasolina/.test(f)) return '&fuel=M';
+  if (/hybrid/.test(f))                          return '&fuel=H'; // mild/full hybrid
+  if (/diesel/.test(f))                          return '&fuel=D';
   if (/benzin|gasolina|gasoline|petrol/.test(f)) return '&fuel=B';
   return '';
 }
@@ -814,8 +816,9 @@ app.post('/prices', async (req, res) => {
 
   // ── Price floor: if we know the German purchase price, cap implausibly cheap results
   // E.g. a 27.950€ German Q3 Sportback 45e shouldn't compare with 8.000€ Gen1 Q3s
+  // Use 0.70x floor — body-variant/trim differences (Sportback vs base) stay within 30%
   if (car.price && car.price > 5000) {
-    const priceFloor = car.price * 0.55;
+    const priceFloor = car.price * 0.70;
     const before = allPrices.length;
     const filtered = allPrices.filter(p => p >= priceFloor);
     if (filtered.length >= 3) {
@@ -847,15 +850,18 @@ app.post('/prices', async (req, res) => {
   // Show comparison cards: filter by year/km proximity first, then by price
   const carYear      = car.year || 0;
   const carKm        = car.mileage || 0;
-  const cardPriceMin = car.price && car.price > 5000 ? car.price * 0.55 : median * 0.45;
+  const cardPriceMin = car.price && car.price > 5000 ? car.price * 0.70 : median * 0.55;
   const filteredItems = allItems
     .filter(i => {
       if (!i.price) return false;
-      // Price sanity: above German-price floor AND within 185% of median
+      // Only show cards with an image (stub items without image have unreliable URLs)
+      if (!i.image) return false;
+      // Price sanity: above German-price floor AND within 160% of median
       if (i.price < cardPriceMin) return false;
-      if (i.price > median * 1.85) return false;
-      // Year filter: if item has year, must be within ±4 years of the car's year
-      if (i.year && carYear && Math.abs(i.year - carYear) > 4) return false;
+      if (i.price > median * 1.60) return false;
+      // Year filter: if item has year, must be within ±3 years of the car's year
+      // If no year info, exclude the card — we can't verify it's the right generation
+      if (carYear && (!i.year || Math.abs(i.year - carYear) > 3)) return false;
       // Km filter: if item has km, must be under car.km * 3
       if (i.km && carKm && i.km > carKm * 3) return false;
       return true;
@@ -910,7 +916,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.4', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.5', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
