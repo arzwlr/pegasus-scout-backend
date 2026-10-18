@@ -939,8 +939,8 @@ app.post('/prices', async (req, res) => {
     if (filtered.length >= 3) {
       allPrices.length = 0;
       allPrices.push(...filtered);
-      allItems = allItems.filter(i => !i.price || i.price >= priceFloor);
-      console.log(`[/prices] price-floor ${Math.round(priceFloor)}€ removed ${before - allPrices.length} cheap outliers`);
+      // Note: allItems keeps ALL items regardless of price floor — filteredItems handles card filtering
+      console.log(`[/prices] price-floor ${Math.round(priceFloor)}€ removed ${before - allPrices.length} cheap prices from stats`);
     }
   }
 
@@ -1100,7 +1100,7 @@ app.get('/debug-as24-struct', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.3', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.4', scraperApi: !!SCRAPER_KEY }));
 
 // ── POST /echo ── confirm body parsing works ──────────────────
 app.post('/echo', (req, res) => res.json({ received: req.body, ok: true }));
