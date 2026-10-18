@@ -645,14 +645,13 @@ function extractListingsAutoscout(html) {
     try {
       const root = JSON.parse(nd[1]);
 
-      // ── Strategy: walk with parent context
-      // When we find a price, check BOTH current obj AND parent for id/images.
-      // This handles the common case where price is in a sub-object (tracking.price)
-      // while id and images live on the parent listing object.
-      function walk(obj, depth, parent) {
-        if (depth > 22 || !obj || typeof obj !== 'object') return;
+      // ── Strategy: walk with grandparent context
+      // AS24 often nests price 2 levels deep (listing → tracking → {price:N})
+      // while id, images live on the grandparent listing object.
+      function walk(obj, depth, parent, grandparent) {
+        if (depth > 25 || !obj || typeof obj !== 'object') return;
         if (Array.isArray(obj)) {
-          obj.forEach(v => walk(v, depth + 1, null));
+          obj.forEach(v => walk(v, depth + 1, null, null));
           return;
         }
 
@@ -660,30 +659,35 @@ function extractListingsAutoscout(html) {
           (typeof obj.price === 'number' && obj.price > 1000 && obj.price < 350000 ? obj.price : null) ||
           (typeof obj.price?.value === 'number' && obj.price.value > 1000 && obj.price.value < 350000 ? obj.price.value : null) ||
           (typeof obj.price?.raw   === 'number' && obj.price.raw   > 1000 && obj.price.raw   < 350000 ? obj.price.raw   : null) ||
-          (typeof obj.priceRaw     === 'number' && obj.priceRaw    > 1000 && obj.priceRaw    < 350000 ? obj.priceRaw    : null);
+          (typeof obj.price?.rawValue === 'number' && obj.price.rawValue > 1000 && obj.price.rawValue < 350000 ? obj.price.rawValue : null) ||
+          (typeof obj.priceRaw     === 'number' && obj.priceRaw    > 1000 && obj.priceRaw    < 350000 ? obj.priceRaw    : null) ||
+          (typeof obj.amount       === 'number' && obj.amount      > 1000 && obj.amount       < 350000 ? obj.amount      : null);
 
         if (rawPrice) {
           prices.push(Math.round(rawPrice));
 
-          // Candidate objects: current + parent + grandparent
-          const candidates = [obj, parent].filter(Boolean);
-          let id = null, imgSrc = null, km = null, yr = null;
+          // Check current obj, parent AND grandparent — AS24 nests price deeply
+          const candidates = [obj, parent, grandparent].filter(Boolean);
+          let id = null, imgSrc = null, km = null, yr = null, urlPath = null;
 
           for (const c of candidates) {
-            if (!id)     id     = c.id || c.articleId || c.guid || c.listingId || c.vehicleId || c.offerId || null;
-            if (!imgSrc) imgSrc = deepImage(c);
-            if (!km)     km     = c.mileage?.value ?? c.mileage ?? c.km ?? deepFind(c, 'mileage')?.value ?? null;
-            if (!yr)     yr     = c.firstRegistration?.year ?? c.firstRegistrationYear
-                                ?? c.year ?? c.vehicleYear ?? deepFind(c, 'firstRegistration')?.year ?? null;
+            if (!id)      id      = c.id || c.articleId || c.guid || c.listingId || c.vehicleId || c.offerId || null;
+            if (!urlPath) urlPath = c.url || c.urlPath || c.href || c.listingUrl || c.detailUrl || null;
+            if (!imgSrc)  imgSrc  = deepImage(c);
+            if (!km)      km      = c.mileage?.value ?? c.mileage ?? c.km ?? deepFind(c, 'mileage')?.value ?? null;
+            if (!yr)      yr      = c.firstRegistration?.year ?? c.firstRegistrationYear
+                                  ?? c.year ?? c.vehicleYear ?? deepFind(c, 'firstRegistration')?.year
+                                  ?? deepFind(c, 'firstRegistrationYear') ?? null;
           }
 
-          // Also check if current obj itself has an id field but we missed it
-          if (!id) id = deepFind(obj, 'articleId') || deepFind(obj, 'listingId');
+          if (!id) id = deepFind(obj, 'articleId') || deepFind(obj, 'listingId') || deepFind(obj, 'vehicleId');
 
-          if (id || imgSrc) {
-            // Deduplicate by id
-            const urlStr = id ? `https://www.autoscout24.es/anuncios/${id}` : null;
-            if (!items.some(i => i.url === urlStr && urlStr)) {
+          if (id || imgSrc || urlPath) {
+            const urlStr = urlPath
+              ? (urlPath.startsWith('http') ? urlPath : `https://www.autoscout24.es${urlPath}`)
+              : (id ? `https://www.autoscout24.es/anuncios/${id}` : null);
+            const key = urlStr || imgSrc;
+            if (key && !items.some(i => (i.url === urlStr && urlStr) || (i.image === imgSrc && imgSrc))) {
               items.push({
                 price: Math.round(rawPrice),
                 url:   urlStr,
@@ -695,10 +699,10 @@ function extractListingsAutoscout(html) {
           }
         }
 
-        Object.values(obj).forEach(v => walk(v, depth + 1, obj));
+        Object.values(obj).forEach(v => walk(v, depth + 1, obj, parent));
       }
 
-      walk(root, 0, null);
+      walk(root, 0, null, null);
 
       // ── If still no items, try scanning for listing-shaped objects by id
       if (!items.length) {
@@ -741,12 +745,44 @@ function extractListingsAutoscout(html) {
     if (p > 1000 && p < 350000) prices.push(p);
   }
 
-  // ── href + price stub fallback (last resort) ─────────────────
+  // ── JSON string scan fallback (last resort) ──────────────────
+  // Scan __NEXT_DATA__ raw text for AS24 listing URL paths + CDN images
+  if (!items.length && nd) {
+    const jsonStr = nd[1];
+    // AS24 embeds listing paths like "/anuncios/audi-q3-...-12345678" in their JSON
+    const urlsInJson = [...new Set(
+      [...jsonStr.matchAll(/"(\/(?:classified|anuncio|ad)s?\/[^"\\]{6,})"/gi),
+       ...jsonStr.matchAll(/"(\/anuncios\/[^"\\]{6,})"/gi)]
+        .map(m => 'https://www.autoscout24.es' + m[1].replace(/\\/g, ''))
+    )];
+    // Also grab any numeric-ID only listings (AS24 uses IDs like 123456789)
+    const idsInJson = [...new Set(
+      [...jsonStr.matchAll(/"(?:articleId|listingId|vehicleId|id)"\s*:\s*"(\d{7,12})"/g)]
+        .map(m => m[1])
+    )];
+    // AS24 CDN images
+    const imgsInJson = [...new Set(
+      [...jsonStr.matchAll(/"(https:[^"]*(?:autoscout24\.net|motork\.io|is1\.adac\.de|cdn\.autoscout24)[^"]*\.(?:jpg|jpeg|png|webp)(?:[^"]{0,60})?)"/gi)]
+        .map(m => m[1].replace(/\\/g, ''))
+    )];
+
+    const sp = [...new Set(prices)].filter(p => p > 5000).sort((a,b) => a-b);
+    const allUrls = [
+      ...urlsInJson,
+      ...idsInJson.map(id => `https://www.autoscout24.es/anuncios/${id}`)
+    ].filter((u,i,a) => a.indexOf(u) === i); // unique
+
+    for (let i = 0; i < Math.min(allUrls.length, 6, sp.length); i++) {
+      items.push({ price: sp[i], url: allUrls[i], image: imgsInJson[i] || null, km: null, year: null });
+    }
+    if (items.length) console.log('[autoscout24] json-scan fallback found', items.length, 'items, urls:', allUrls.length, 'imgs:', imgsInJson.length);
+  }
+
+  // ── href stub fallback (absolute last resort) ─────────────────
   if (!items.length) {
     const hrefs = [...new Set(
       [...html.matchAll(/href="(\/anuncios\/[^"?#]{6,}?)"/g)].map(m => 'https://www.autoscout24.es' + m[1])
     )];
-    // prices already collected above; sort and pair
     const stubPrices = [...new Set(prices)].sort((a,b) => a-b);
     for (let i = 0; i < Math.min(hrefs.length, 6, stubPrices.length); i++) {
       items.push({ price: stubPrices[i], url: hrefs[i], image: null, km: null, year: null });
@@ -979,7 +1015,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.8', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.9', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
