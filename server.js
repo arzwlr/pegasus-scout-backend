@@ -890,6 +890,7 @@ function estimateDays(fuelType, count) {
 
 // ── POST /prices ─────────────────────────────────────────────
 app.post('/prices', async (req, res) => {
+  try {
   const car = req.body;
   console.log('[/prices] request:', car);
   if (!car?.make || !car?.model) return res.status(400).json({ error: 'make and model required' });
@@ -999,6 +1000,10 @@ app.post('/prices', async (req, res) => {
   };
   cache.set(key, { ts: Date.now(), data });
   res.json(data);
+  } catch(err) {
+    console.error('[/prices] UNHANDLED ERROR:', err);
+    res.status(500).json({ error: err.message, stack: err.stack?.split('\n').slice(0,5) });
+  }
 });
 
 // ── GET /debug ────────────────────────────────────────────────
@@ -1074,7 +1079,7 @@ app.get('/debug-as24-struct', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.0', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.1', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
