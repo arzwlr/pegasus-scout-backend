@@ -780,6 +780,7 @@ function extractListingsAutoscout(html) {
   }
 
   // ── JSON fragment fallback for prices ────────────────────────
+  // IMPORTANT: run this BEFORE json-scan so scan has prices to pair with URLs
   for (const m of html.matchAll(/"(?:price|priceRaw|amount)"\s*:\s*(\d{4,6})/g)) {
     const p = parseInt(m[1]);
     if (p > 1000 && p < 350000) prices.push(p);
@@ -799,11 +800,12 @@ function extractListingsAutoscout(html) {
        ...jsonStr.matchAll(/"(\/anuncios\/[^"\\]{6,})"/gi)]
         .map(m => 'https://www.autoscout24.es' + m[1].replace(/\\/g, ''))
     )];
-    // Also grab any numeric-ID only listings (AS24 uses IDs like 123456789)
-    const idsInJson = [...new Set(
-      [...jsonStr.matchAll(/"(?:articleId|listingId|vehicleId|id)"\s*:\s*"(\d{7,12})"/g)]
-        .map(m => m[1])
-    )];
+    // Also grab any numeric-ID only listings (AS24 uses IDs like 123456789 — as string or number)
+    const idsInJson = [...new Set([
+      ...[...jsonStr.matchAll(/"(?:articleId|listingId|vehicleId)"\s*:\s*"(\d{7,12})"/g)].map(m => m[1]),
+      ...[...jsonStr.matchAll(/"(?:articleId|listingId|vehicleId)"\s*:\s*(\d{7,12})/g)].map(m => m[1]),
+      ...[...jsonStr.matchAll(/"id"\s*:\s*"(\d{7,12})"/g)].map(m => m[1]),
+    ])];
     // AS24 CDN images
     const imgsInJson = [...new Set(
       [...jsonStr.matchAll(/"(https:[^"]*(?:autoscout24\.net|motork\.io|is1\.adac\.de|cdn\.autoscout24)[^"]*\.(?:jpg|jpeg|png|webp)(?:[^"]{0,60})?)"/gi)]
@@ -832,7 +834,7 @@ function extractListingsAutoscout(html) {
     if (items.length) console.log('[autoscout24] json-scan fallback found', items.length, 'items, urls:', allUrls.length, 'imgs:', imgsInJson.length, 'years:', yearsInJson.slice(0,3), 'kms:', kmsInJson.slice(0,3));
   }
 
-  // ── href stub fallback (absolute last resort) ─────────────────
+  // ── href stub fallback ────────────────────────────────────────
   if (!items.length) {
     const hrefs = [...new Set(
       [...html.matchAll(/href="(\/anuncios\/[^"?#]{6,}?)"/g)].map(m => 'https://www.autoscout24.es' + m[1])
@@ -841,6 +843,19 @@ function extractListingsAutoscout(html) {
     for (let i = 0; i < Math.min(hrefs.length, 6, stubPrices.length); i++) {
       items.push({ price: stubPrices[i], url: hrefs[i], image: null, km: null, year: null });
     }
+  }
+
+  // ── Price-only stub (absolute last resort) ────────────────────
+  // If we have prices but still no items (no URL/ID extracted at all),
+  // create minimal cards linking to the AS24 search results page.
+  // The car param is not available here, so we use null URL; the frontend
+  // will show the price with a placeholder link.
+  if (!items.length && prices.length) {
+    const stubPrices = [...new Set(prices)].filter(p => p > 5000).sort((a,b) => a-b);
+    for (let i = 0; i < Math.min(stubPrices.length, 6); i++) {
+      items.push({ price: stubPrices[i], url: null, image: null, km: null, year: null });
+    }
+    console.log('[autoscout24] price-only stubs created:', items.length);
   }
 
   console.log('[autoscout24-extract] prices:', prices.length, 'items:', items.length,
