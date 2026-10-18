@@ -784,6 +784,30 @@ app.post('/prices', async (req, res) => {
 
   console.log('[/prices] total prices:', allPrices.length, 'items:', allItems.length, 'from:', sources);
 
+  // ── Year-guard: if items have year data, remove prices from items too old/new
+  // This prevents Q3 Gen1 (2011-2018) from polluting a Q3 Gen2 (2022) search
+  if (car.year) {
+    const yearMin = car.year - 4;
+    const yearMax = car.year + 4;
+    const itemsWithYear = allItems.filter(i => i.year);
+    if (itemsWithYear.length >= 3) {
+      // Enough year-tagged items to do year-aware price filtering
+      const yearOkItems  = itemsWithYear.filter(i => i.year >= yearMin && i.year <= yearMax);
+      const yearBadItems = itemsWithYear.filter(i => i.year < yearMin || i.year > yearMax);
+      if (yearOkItems.length >= 2 && yearBadItems.length > 0) {
+        // Remove prices from out-of-range items
+        const badPrices = new Set(yearBadItems.map(i => i.price));
+        const before = allPrices.length;
+        for (const p of badPrices) {
+          const idx = allPrices.indexOf(p);
+          if (idx !== -1) allPrices.splice(idx, 1);
+        }
+        allItems = allItems.filter(i => !i.year || (i.year >= yearMin && i.year <= yearMax));
+        console.log(`[/prices] year-guard removed ${before - allPrices.length} prices outside ${yearMin}-${yearMax}`);
+      }
+    }
+  }
+
   if (!allPrices.length) {
     return res.status(404).json({
       error: 'No prices found',
@@ -801,10 +825,30 @@ app.post('/prices', async (req, res) => {
   const sorted = [...allPrices].sort((a,b)=>a-b);
   const mid    = Math.floor(sorted.length/2);
   const median = sorted.length%2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
-  // Show comparison cards closest to the median price (same segment)
+
+  // Show comparison cards: filter by year/km proximity first, then by price
+  const carYear = car.year || 0;
+  const carKm   = car.mileage || 0;
   const filteredItems = allItems
-    .filter(i => i.price >= median * 0.55 && i.price <= median * 1.8)
-    .sort((a,b) => Math.abs(a.price - median) - Math.abs(b.price - median));
+    .filter(i => {
+      if (!i.price) return false;
+      // Price sanity: within 45–185% of median
+      if (i.price < median * 0.45 || i.price > median * 1.85) return false;
+      // Year filter: if item has year, must be within ±4 years of the car's year
+      if (i.year && carYear && Math.abs(i.year - carYear) > 4) return false;
+      // Km filter: if item has km, must be under car.km * 3 (and at least 1000)
+      if (i.km && carKm && i.km > carKm * 3) return false;
+      return true;
+    })
+    // Score: items with matching year/km closer to reality rank higher
+    .sort((a, b) => {
+      const yearScoreA = a.year && carYear ? Math.abs(a.year - carYear) : 2;
+      const yearScoreB = b.year && carYear ? Math.abs(b.year - carYear) : 2;
+      const priceScoreA = Math.abs(a.price - median);
+      const priceScoreB = Math.abs(b.price - median);
+      // Combined score: year proximity weighs more than price
+      return (yearScoreA * 3000 + priceScoreA) - (yearScoreB * 3000 + priceScoreB);
+    });
 
   const data  = {
     ...stats,
