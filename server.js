@@ -250,14 +250,29 @@ async function fetchWallapop(car) {
     return fetchWallapopNoModel(car, make, year);
   }
 
-  const prices = items
-    .map(i => i?.price?.amount ?? i?.content?.sale_price ?? i?.sale_price)
-    .filter(p => p != null)
-    .map(p => typeof p === 'number' ? p : parseFloat(p))
-    .filter(p => !isNaN(p) && p > 1000 && p < 350000);
+  const structured = items.map(i => {
+    const rawPrice = i?.price?.amount ?? i?.content?.sale_price ?? i?.sale_price;
+    const p = typeof rawPrice === 'number' ? rawPrice : parseFloat(rawPrice);
+    if (isNaN(p) || p <= 1000 || p >= 350000) return null;
+    const slug   = i?.web_slug ?? i?.content?.web_slug ?? i?.id ?? null;
+    const imgObj = i?.main_image?.urls ?? i?.content?.images?.[0]?.urls ?? null;
+    const img    = imgObj?.big ?? imgObj?.medium ?? imgObj?.small ?? null;
+    const km     = i?.km ?? i?.content?.km ?? null;
+    const yr     = i?.year ?? i?.content?.year ?? null;
+    return {
+      price: Math.round(p),
+      url:   slug ? `https://es.wallapop.com/item/${slug}` : null,
+      image: img || null,
+      km:    parseInt(km) || null,
+      year:  parseInt(yr) || null,
+    };
+  }).filter(Boolean);
+
+  const prices = structured.map(i => i.price);
 
   console.log('[wallapop] valid prices:', prices.length, prices.slice(0, 5));
-  return { prices, source: 'wallapop' };
+  console.log('[wallapop] structured items:', structured.length, structured[0] ? JSON.stringify(structured[0]).slice(0,120) : '');
+  return { prices, items: structured, source: 'wallapop' };
 }
 
 async function fetchWallapopNoModel(car, make, year) {
@@ -295,14 +310,29 @@ async function fetchWallapopNoModel(car, make, year) {
   const items = data?.data?.section?.payload?.items ?? data?.search_objects ?? [];
   console.log('[wallapop-nomodel] items:', items.length);
 
-  const prices = items
-    .map(i => i?.price?.amount ?? i?.content?.sale_price ?? i?.sale_price)
-    .filter(p => p != null)
-    .map(p => typeof p === 'number' ? p : parseFloat(p))
-    .filter(p => !isNaN(p) && p > 1000 && p < 350000);
+  const structured2 = items.map(i => {
+    const rawPrice = i?.price?.amount ?? i?.content?.sale_price ?? i?.sale_price;
+    const p = typeof rawPrice === 'number' ? rawPrice : parseFloat(rawPrice);
+    if (isNaN(p) || p <= 1000 || p >= 350000) return null;
+    const slug   = i?.web_slug ?? i?.content?.web_slug ?? i?.id ?? null;
+    const imgObj = i?.main_image?.urls ?? i?.content?.images?.[0]?.urls ?? null;
+    const img    = imgObj?.big ?? imgObj?.medium ?? imgObj?.small ?? null;
+    const km     = i?.km ?? i?.content?.km ?? null;
+    const yr     = i?.year ?? i?.content?.year ?? null;
+    return {
+      price: Math.round(p),
+      url:   slug ? `https://es.wallapop.com/item/${slug}` : null,
+      image: img || null,
+      km:    parseInt(km) || null,
+      year:  parseInt(yr) || null,
+    };
+  }).filter(Boolean);
+
+  const prices = structured2.map(i => i.price);
 
   console.log('[wallapop-nomodel] prices:', prices.length);
-  return { prices, source: 'wallapop' };
+  console.log('[wallapop-nomodel] structured items:', structured2.length, structured2[0] ? JSON.stringify(structured2[0]).slice(0,120) : '');
+  return { prices, items: structured2, source: 'wallapop' };
 }
 
 // ── coches.net ───────────────────────────────────────────────
@@ -949,7 +979,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.7', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.8', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
