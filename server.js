@@ -337,59 +337,87 @@ async function fetchWallapopNoModel(car, make, year) {
 }
 
 // ── coches.net ───────────────────────────────────────────────
-function extractPrices(html) {
+function extractListingsCochesNet(html) {
   const prices = [];
+  const items  = [];
 
-  // Strategy 1: JSON-LD
+  // Strategy 1: JSON-LD ItemList (most structured)
   for (const m of html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)) {
     try {
-      const obj   = JSON.parse(m[1]);
-      const items = obj?.itemListElement ?? (Array.isArray(obj) ? obj : [obj]);
-      for (const it of items) {
-        const p = it?.offers?.price ?? it?.item?.offers?.price ?? it?.price;
-        const n = parseFloat(p);
-        if (n > 1000 && n < 350000) prices.push(n);
+      const obj      = JSON.parse(m[1]);
+      const elements = obj?.itemListElement ?? (Array.isArray(obj) ? obj : [obj]);
+      for (const it of elements) {
+        const item = it?.item ?? it;
+        const p    = parseFloat(item?.offers?.price ?? item?.price ?? 0);
+        if (p > 1000 && p < 350000) {
+          prices.push(p);
+          const url = item?.url ?? item?.['@id'] ?? null;
+          const img = item?.image?.[0] ?? item?.image ?? null;
+          const km  = parseInt(item?.mileageFromOdometer?.value ?? 0) || null;
+          const yr  = parseInt(item?.vehicleModelDate ?? item?.modelDate ?? 0) || null;
+          if (url) items.push({ price: Math.round(p), url, image: typeof img === 'string' ? img : null, km, year: yr });
+        }
       }
     } catch {}
   }
 
-  // Strategy 2: __NEXT_DATA__
+  // Strategy 2: __NEXT_DATA__ — walk for listing objects with price + url/id
   const nd = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
   if (nd) {
     try {
-      const walk = (obj, d = 0) => {
-        if (d > 15 || !obj || typeof obj !== 'object') return;
-        for (const [k, v] of Object.entries(obj)) {
-          if ((k === 'price' || k === 'precio' || k === 'amount') && typeof v === 'number' && v > 1000 && v < 350000) {
-            prices.push(v);
-          } else {
-            walk(v, d + 1);
+      const root = JSON.parse(nd[1]);
+      const seen = new Set();
+      function walkCN(obj, d = 0) {
+        if (d > 18 || !obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) { obj.forEach(v => walkCN(v, d + 1)); return; }
+        const p = typeof obj.price === 'number' ? obj.price
+                : typeof obj.precio === 'number' ? obj.precio
+                : typeof obj.amount === 'number' ? obj.amount : null;
+        if (p && p > 1000 && p < 350000) {
+          prices.push(p);
+          const url = obj.url ?? obj.link ?? obj.href ?? obj.urlFicha ?? null;
+          const img = obj.image ?? obj.photo ?? obj.imagen ?? obj.photos?.[0] ?? null;
+          const km  = parseInt(obj.km ?? obj.mileage ?? obj.kilometros ?? 0) || null;
+          const yr  = parseInt(obj.year ?? obj.ano ?? obj.anio ?? obj.yearModel ?? 0) || null;
+          const key = url || String(p);
+          if (!seen.has(key)) {
+            seen.add(key);
+            const fullUrl = url ? (url.startsWith('http') ? url : `https://www.coches.net${url}`) : null;
+            items.push({ price: Math.round(p), url: fullUrl, image: typeof img === 'string' ? img : null, km, year: yr });
           }
+          return; // don't recurse into a listing we already processed
         }
-      };
-      walk(JSON.parse(nd[1]));
+        for (const v of Object.values(obj)) walkCN(v, d + 1);
+      }
+      walkCN(root);
     } catch {}
   }
 
-  // Strategy 3: data-price
+  // Strategy 3: href links with /ficha/ pattern — pair with prices already found
+  if (!items.length) {
+    const hrefs = [...new Set(
+      [...html.matchAll(/href="([^"]*\/ficha\/[^"?#]{4,}?)"/gi)].map(m =>
+        m[1].startsWith('http') ? m[1] : `https://www.coches.net${m[1]}`
+      )
+    )];
+    const sorted = [...new Set(prices)].filter(p => p > 5000).sort((a,b) => a-b);
+    for (let i = 0; i < Math.min(hrefs.length, 6, sorted.length); i++) {
+      items.push({ price: sorted[i], url: hrefs[i], image: null, km: null, year: null });
+    }
+  }
+
+  // Fallback price strategies for the stats
   for (const m of html.matchAll(/data-price="(\d+)"/g)) {
-    const p = parseInt(m[1]);
-    if (p > 1000 && p < 350000) prices.push(p);
+    const p = parseInt(m[1]); if (p > 1000 && p < 350000) prices.push(p);
   }
-
-  // Strategy 4: JSON fragments
   for (const m of html.matchAll(/"(?:precio|price|amount|pvp)"\s*:\s*(\d{4,6})/g)) {
-    const p = parseInt(m[1]);
-    if (p > 1000 && p < 350000) prices.push(p);
+    const p = parseInt(m[1]); if (p > 1000 && p < 350000) prices.push(p);
   }
-
-  // Strategy 5: "24.500 €" text pattern
   for (const m of html.matchAll(/(\d{1,3}(?:\.\d{3})+)\s*€/g)) {
-    const p = parseInt(m[1].replace(/\./g, ''));
-    if (p > 1000 && p < 350000) prices.push(p);
+    const p = parseInt(m[1].replace(/\./g, '')); if (p > 1000 && p < 350000) prices.push(p);
   }
 
-  return [...new Set(prices)];
+  return { prices: [...new Set(prices)], items: items.filter(i => i.price) };
 }
 
 async function fetchCochesNet(car) {
@@ -408,12 +436,12 @@ async function fetchCochesNet(car) {
   console.log('[coches.net] status', res.status, 'url-slug:', `${makeSlug}-${modelSlug}`);
   if (!res.ok) throw new Error(`coches.net HTTP ${res.status} (slug: ${makeSlug}-${modelSlug})`);
 
-  const html   = await res.text();
+  const html = await res.text();
   console.log('[coches.net] html length:', html.length);
-  const prices = extractPrices(html);
-  console.log('[coches.net] prices:', prices.length, prices.slice(0, 5));
+  const { prices, items } = extractListingsCochesNet(html);
+  console.log('[coches.net] prices:', prices.length, 'items:', items.length, prices.slice(0, 5));
 
-  return { prices, source: 'coches.net' };
+  return { prices, items, source: 'coches.net' };
 }
 
 // ── Model slug normalizer for Autoscout24 ────────────────────
