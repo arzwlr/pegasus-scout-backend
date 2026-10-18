@@ -543,7 +543,22 @@ async function fetchAutoscout24(car) {
 
   if (!res.ok) throw new Error(`autoscout24 HTTP ${res.status}`);
 
-  const html = await res.text();
+  let html = await res.text();
+  // If bot-detection served a page without __NEXT_DATA__, force ScraperAPI
+  if (!html.includes('__NEXT_DATA__') && SCRAPER_KEY) {
+    console.log('[autoscout24] bot-blocked (no __NEXT_DATA__), retrying via ScraperAPI...');
+    try {
+      const res3 = await scrapedFetch(url);
+      if (res3.ok) {
+        const html3 = await res3.text();
+        if (html3.includes('__NEXT_DATA__')) {
+          html = html3;
+          console.log('[autoscout24] ScraperAPI returned real __NEXT_DATA__');
+        }
+      }
+    } catch(e) { console.log('[autoscout24] ScraperAPI retry failed:', e.message); }
+  }
+
   const { prices, items } = extractListingsAutoscout(html);
   console.log('[autoscout24] prices:', prices.length, 'items:', items.length, prices.slice(0, 5));
 
@@ -558,7 +573,7 @@ async function fetchAutoscout24(car) {
         headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*', 'Accept-Language': 'es-ES,es;q=0.9', 'Referer': 'https://www.autoscout24.es/' },
         signal: AbortSignal.timeout(15000),
       });
-      if (!res2.ok && SCRAPER_KEY) res2 = await scrapedFetch(urlNoFuel);
+      if ((!res2.ok || !((await res2.clone().text()).includes('__NEXT_DATA__'))) && SCRAPER_KEY) res2 = await scrapedFetch(urlNoFuel);
       if (res2.ok) {
         const html2 = await res2.text();
         const { prices: p2, items: i2 } = extractListingsAutoscout(html2);
@@ -1059,7 +1074,7 @@ app.get('/debug-as24-struct', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.9', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.0', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
