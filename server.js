@@ -1025,8 +1025,18 @@ app.post('/prices', async (req, res) => {
   // Use median-based floor (NOT German purchase price) so PHEV/base variants both appear
   const carYear      = car.year || 0;
   const carKm        = car.mileage || 0;
-  const cardPriceMin = median * 0.50;  // show anything ≥50% of Spanish median
-  const cardPriceMax = median * 1.70;  // cap at 170% of median
+
+  // Items-based anchor: AS24 returns ALL variants under one slug (e.g. 'gle' covers GLE 250..GLE 63 AMG).
+  // When the user compares a high-end trim, the allPrices median is dragged down by cheaper base variants.
+  // Fix: compute the median of the actual comparison items and use whichever anchor is higher.
+  const itemPFilt = allItems.map(i => i.price).filter(p => p > 5000).sort((a, b) => a - b);
+  const ipMid = Math.floor(itemPFilt.length / 2);
+  const itemsMedianForCards = itemPFilt.length
+    ? (itemPFilt.length % 2 ? itemPFilt[ipMid] : (itemPFilt[ipMid - 1] + itemPFilt[ipMid]) / 2)
+    : median;
+  const cardAnchor   = Math.max(median, itemsMedianForCards);
+  const cardPriceMin = cardAnchor * 0.50;
+  const cardPriceMax = cardAnchor * 1.70;
 
   const filteredItems = allItems
     .filter(i => {
@@ -1050,7 +1060,7 @@ app.post('/prices', async (req, res) => {
       return (yearScoreA * 3000 + priceScoreA) - (yearScoreB * 3000 + priceScoreB);
     });
 
-  console.log(`[/prices] filteredItems: ${filteredItems.length} (from allItems: ${allItems.length}), cardPriceMin: ${Math.round(cardPriceMin)}€, cardPriceMax: ${Math.round(cardPriceMax)}€, median: ${Math.round(median)}€`);
+  console.log(`[/prices] filteredItems: ${filteredItems.length} (from allItems: ${allItems.length}), cardAnchor: ${Math.round(cardAnchor)}€ (median: ${Math.round(median)}€, itemsMed: ${Math.round(itemsMedianForCards)}€), min: ${Math.round(cardPriceMin)}€, max: ${Math.round(cardPriceMax)}€`);
   if (filteredItems.length) console.log('[/prices] filteredItems[0]:', JSON.stringify(filteredItems[0]));
   else if (allItems.length) console.log('[/prices] allItems rejected, sample[0]:', JSON.stringify(allItems[0]));
 
@@ -1153,7 +1163,7 @@ app.get('/debug-as24-struct', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.6', scraperApi: !!SCRAPER_KEY, cacheSize: cache.size }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.7', scraperApi: !!SCRAPER_KEY, cacheSize: cache.size }));
 
 // ── GET /cache/clear ─────────────────────────────────────────
 app.get('/cache/clear', (_req, res) => { const n = cache.size; cache.clear(); res.json({ cleared: n }); });
