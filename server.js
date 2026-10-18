@@ -28,9 +28,9 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// ── Cache 4h ────────────────────────────────────────────────
+// ── Cache 1h ────────────────────────────────────────────────
 const cache  = new Map();
-const TTL_MS = 4 * 60 * 60 * 1000;
+const TTL_MS = 1 * 60 * 60 * 1000;
 function cacheKey(car) {
   const km = Math.round((car.mileage || 0) / 20000) * 20000;
   return `${car.make}|${car.model}|${car.year}|${km}`.toLowerCase();
@@ -1153,7 +1153,10 @@ app.get('/debug-as24-struct', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.5', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.6', scraperApi: !!SCRAPER_KEY, cacheSize: cache.size }));
+
+// ── GET /cache/clear ─────────────────────────────────────────
+app.get('/cache/clear', (_req, res) => { const n = cache.size; cache.clear(); res.json({ cleared: n }); });
 
 // ── POST /echo ── confirm body parsing works ──────────────────
 app.post('/echo', (req, res) => res.json({ received: req.body, ok: true }));
