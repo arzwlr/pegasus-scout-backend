@@ -1006,6 +1006,17 @@ app.post('/prices', async (req, res) => {
   }
 });
 
+// ── POST /test-as24 ─── quick diagnostic ─────────────────────
+app.post('/test-as24', async (req, res) => {
+  try {
+    const car = req.body || { make: 'Audi', model: 'Q3 Sportback', year: 2022, mileage: 33300, fuelType: 'Híbrido (gasolina/eléctrico)', price: 27950 };
+    const result = await fetchAutoscout24(car);
+    res.json({ ok: true, prices: result.prices.length, items: result.items.length, firstItem: result.items[0] || null, samplePrices: result.prices.slice(0,5) });
+  } catch(e) {
+    res.json({ ok: false, error: e.message, stack: e.stack?.split('\n').slice(0,4) });
+  }
+});
+
 // ── GET /debug ────────────────────────────────────────────────
 app.get('/debug', async (req, res) => {
   const car = {
@@ -1079,7 +1090,7 @@ app.get('/debug-as24-struct', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.1', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '3.2', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
