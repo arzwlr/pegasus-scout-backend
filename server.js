@@ -854,14 +854,11 @@ app.post('/prices', async (req, res) => {
   const filteredItems = allItems
     .filter(i => {
       if (!i.price) return false;
-      // Only show cards with an image (stub items without image have unreliable URLs)
-      if (!i.image) return false;
       // Price sanity: above German-price floor AND within 160% of median
       if (i.price < cardPriceMin) return false;
       if (i.price > median * 1.60) return false;
-      // Year filter: if item has year, must be within ±3 years of the car's year
-      // If no year info, exclude the card — we can't verify it's the right generation
-      if (carYear && (!i.year || Math.abs(i.year - carYear) > 3)) return false;
+      // Year filter: if both car and item have year, must be within ±4 years
+      if (carYear && i.year && Math.abs(i.year - carYear) > 4) return false;
       // Km filter: if item has km, must be under car.km * 3
       if (i.km && carKm && i.km > carKm * 3) return false;
       return true;
@@ -916,7 +913,7 @@ app.get('/debug', async (req, res) => {
 });
 
 // ── GET /health ──────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.5', scraperApi: !!SCRAPER_KEY }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now(), version: '2.6', scraperApi: !!SCRAPER_KEY }));
 
 app.post('/cache/clear', (_req, res) => { cache.clear(); res.json({ cleared: true }); });
 
